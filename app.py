@@ -1,36 +1,44 @@
+from fastapi import FastAPI
 import re
 
-def analyze_url(url):
-    print(f"\n--- Analyzing: {url} ---")
+app = FastAPI()
+
+@app.get("/")
+def home():
+    return {"message": "URL-Sentinel API is running"}
+
+@app.post("/scan")
+def scan_url(data: dict):
+    url = data.get("url", "")
     risk_score = 0
-    
+    flags = []
+
+    if not url:
+        return {"error": "URL parameter is missing"}
+
     # 1. Check HTTPS
     if not url.startswith("https://"):
-        print("⚠️ Warning: Missing HTTPS connection.")
         risk_score += 2
-    else:
-        print("✅ Secure HTTPS connection present.")
-        
+        flags.append("Missing HTTPS connection")
+
     # 2. Check URL Length
     if len(url) > 50:
-        print("⚠️ Warning: Abnormally long URL detected.")
         risk_score += 2
-    else:
-        print("✅ Normal URL length.")
+        flags.append("URL length is unusually long")
 
-    # 3. Check for Raw IP Address in URL
+    # 3. Check for Raw IP Address
     ip_pattern = r"http[s]?://(?:\d{1,3}\.){3}\d{1,3}"
     if re.search(ip_pattern, url):
-        print("🚨 Alert: Direct IP address used instead of Domain Name!")
         risk_score += 3
+        flags.append("Direct IP address used instead of domain")
 
-    # Final Risk Evaluation
-    print(f"Total Risk Score: {risk_score}/7")
-    if risk_score >= 3:
-        print("❌ Final Result: SUSPICIOUS / HIGH RISK URL")
-    else:
-        print("✅ Final Result: SAFE / LOW RISK URL")
-
-# Test URLs
-analyze_url("http://192.168.1.1/login-verify-account-security-update")
-analyze_url("https://google.com")
+    # Evaluation
+    is_suspicious = risk_score >= 3
+    
+    return {
+        "url": url,
+        "risk_score": risk_score,
+        "max_score": 7,
+        "is_suspicious": is_suspicious,
+        "detected_flags": flags
+    }
