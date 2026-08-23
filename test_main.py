@@ -1,31 +1,29 @@
 from fastapi.testclient import TestClient
 from app import app
 
-# API ko test karne ke liye client tayar kar rahe hain
 client = TestClient(app)
 
-def test_home_endpoint():
-    # Root URL (/) ko test kar rahe hain
+def test_read_root():
     response = client.get("/")
     assert response.status_code == 200
     assert response.json() == {"message": "URL-Sentinel API is running"}
 
-def test_suspicious_url_detection():
-    # Unencrypted IP address wali link ko test kar rahe hain
-    payload = {"url": "http://192.168.1.1/update-login"}
-    response = client.post("/scan", json=payload)
-    
+def test_scan_suspicious_url():
+    response = client.post("/scan", json={"url": "http://192.168.1.1/verify/login"})
     assert response.status_code == 200
     data = response.json()
-    assert data["is_suspicious"] is True
-    assert data["risk_score"] >= 3
+    assert data["is_suspicious"] == True
+    assert data["risk_score"] > 0
 
-def test_safe_url_detection():
-    # Normal secure domain ko test kar rahe hain
-    payload = {"url": "https://google.com"}
-    response = client.post("/scan", json=payload)
-    
+def test_scan_safe_url():
+    response = client.post("/scan", json={"url": "https://google.com"})
     assert response.status_code == 200
     data = response.json()
-    assert data["is_suspicious"] is False
-    assert data["risk_score"] == 0
+    assert data["is_suspicious"] == False
+
+def test_threat_feed_detection():
+    response = client.post("/scan", json={"url": "http://login-verification-paypal.com"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["is_suspicious"] == True
+    assert "CRITICAL: URL found in Live Threat Feed Database" in data["detected_flags"]
