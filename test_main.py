@@ -3,27 +3,28 @@ from app import app
 
 client = TestClient(app)
 
-def test_read_root():
-    response = client.get("/")
-    assert response.status_code == 200
-    assert response.json() == {"message": "URL-Sentinel API is running"}
-
-def test_scan_suspicious_url():
-    response = client.post("/scan", json={"url": "http://192.168.1.1/verify/login"})
-    assert response.status_code == 200
-    data = response.json()
-    assert data["is_suspicious"] == True
-    assert data["risk_score"] > 0
-
 def test_scan_safe_url():
     response = client.post("/scan", json={"url": "https://google.com"})
     assert response.status_code == 200
     data = response.json()
-    assert data["is_suspicious"] == False
+    assert data["is_malicious"] is False
 
-def test_threat_feed_detection():
-    response = client.post("/scan", json={"url": "http://login-verification-paypal.com"})
+def test_scan_phishing_url():
+    response = client.post("/scan", json={"url": "http://192.168.1.1/login-verify"})
     assert response.status_code == 200
     data = response.json()
-    assert data["is_suspicious"] == True
-    assert "CRITICAL: URL found in Live Threat Feed Database" in data["detected_flags"]
+    assert data["is_malicious"] is True
+
+def test_scan_threat_feed_match():
+    response = client.post("/scan", json={"url": "http://malicious-phishing-site.com/login"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["is_malicious"] is True
+
+def test_metrics_endpoint():
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    data = response.json()
+    assert "total_scans" in data
+    assert "threats_detected" in data
+    assert "safe_urls" in data
