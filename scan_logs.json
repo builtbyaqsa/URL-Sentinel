@@ -28,5 +28,15 @@
     "url": "http://malicious-phishing-site.com/login",
     "is_malicious": true,
     "risk_score": 4
+  },
+  {
+    "url": "http://192.168.1.1/login-verify",
+    "is_malicious": true,
+    "risk_score": 7
+  },
+  {
+    "url": "https://google.com",
+    "is_malicious": false,
+    "risk_score": 0
   }
 ]

@@ -1,20 +1,27 @@
 import json
 import os
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Request, HTTPException, Security
+from fastapi.security import APIKeyHeader
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
 from schemas import URLScanRequest, URLScanResponse
 from rules import analyze_url_heuristics
 from services import check_threat_feed
 
+# Rate limiter setup (IP based)
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="URL-Sentinel", version="1.0.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 LOG_FILE = "scan_logs.json"
+API_KEY = "sentinel-secret-key-123"
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 def log_scan_event(url: str, is_malicious: bool, score: int):
-    entry = {
-        "url": url,
-        "is_malicious": is_malicious,
-        "risk_score": score
-    }
+    entry = {"url": url, "is_malicious": is_malicious, "risk_score": score}
     logs = []
     if os.path.exists(LOG_FILE):
         try:
@@ -26,8 +33,15 @@ def log_scan_event(url: str, is_malicious: bool, score: int):
     with open(LOG_FILE, "w") as f:
         json.dump(logs, f, indent=2)
 
+# 1. Health Check Endpoint
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "service": "URL-Sentinel API"}
+
+# 2. Scans with Rate Limiting (5 requests per minute per IP)
 @app.post("/scan", response_model=URLScanResponse)
-def scan_url(payload: URLScanRequest, background_tasks: BackgroundTasks):
+@limiter.limit("5/minute")
+def scan_url(request: Request, payload: URLScanRequest, background_tasks: BackgroundTasks):
     result = analyze_url_heuristics(payload.url)
     
     score = result.get("risk_score", 0)
@@ -35,21 +49,12 @@ def scan_url(payload: URLScanRequest, background_tasks: BackgroundTasks):
     max_score = result.get("max_score", 100)
     is_suspicious = result.get("is_suspicious", False)
         
-    # Flexible threat feed check
     in_feed = check_threat_feed(payload.url)
-    threat_found = False
-
-    if isinstance(in_feed, dict):
-        threat_found = in_feed.get("is_malicious", False) or in_feed.get("in_feed", False) or bool(in_feed)
-    else:
-        threat_found = bool(in_feed)
-
-    if threat_found:
+    if in_feed:
         score += 80
         flags.append("URL found in threat database")
         
-    # Mark malicious if score >= 50 OR if any heuristic flags/suspicion were detected
-    is_malicious = (score >= 50) or is_suspicious or len(flags) > 0 or threat_found
+    is_malicious = (score >= 50) or is_suspicious or (len(flags) > 0) or bool(in_feed)
     
     background_tasks.add_task(log_scan_event, payload.url, is_malicious, score)
     
@@ -63,8 +68,12 @@ def scan_url(payload: URLScanRequest, background_tasks: BackgroundTasks):
         detected_flags=flags
     )
 
+# 3. Protected Metrics Endpoint
 @app.get("/metrics")
-def get_metrics():
+def get_metrics(api_key: str = Security(api_key_header)):
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Unauthorized: Invalid API Key")
+        
     if not os.path.exists(LOG_FILE):
         return {"total_scans": 0, "threats_detected": 0, "safe_urls": 0}
     try:
