@@ -136,8 +136,7 @@ def get_metrics(
         "database_engine": "SQLite / SQLAlchemy ORM"
     }
 
-
-@app.get('/scans', tags=['Telemetry'])
+@app.get("/scans", tags=["Telemetry"])
 def get_scan_history(limit: int = 10, db: Session = Depends(get_db)):
     scans = db.query(models.ScanLog).order_by(models.ScanLog.id.desc()).limit(limit).all()
-    return {'total': len(scans), 'scans': scans}
+    return {"total": len(scans), "scans": scans}
