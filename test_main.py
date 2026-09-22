@@ -8,5 +8,11 @@ def test_read_root():
     assert response.status_code == 200
 
 def test_scan_url():
-    response = client.post('/scan', json={'url': 'http://example.com'})
+    response = client.post('/scan', json={'url': 'http://192.168.1.1/login-verify'})
     assert response.status_code == 200
+    assert 'prediction' in response.json()
+
+def test_get_scans_history():
+    response = client.get('/scans')
+    assert response.status_code == 200
+    assert 'scans' in response.json()

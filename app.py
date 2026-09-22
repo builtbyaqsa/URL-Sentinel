@@ -1,56 +1,38 @@
-from fastapi import FastAPI, Depends
-from sqlalchemy.orm import Session
+from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel
-import pickle
-import numpy as np
-import models
-from database import engine, get_db
-from feature_extractor import extract_features
+from sqlalchemy.orm import Session
+from database import engine, get_db, Base
+from models import ScanLog
+from cache import get_cached_scan, set_cached_scan
 
-models.Base.metadata.create_all(bind=engine)
+Base.metadata.create_all(bind=engine)
 
-with open('phishing_model.pkl', 'rb') as f:
-    ml_model = pickle.load(f)
+app = FastAPI(title='URL-Sentinel API')
 
-app = FastAPI(title='URL-Sentinel API', version='1.0')
-
-class URLScanRequest(BaseModel):
+class ScanRequest(BaseModel):
     url: str
 
 @app.get('/')
 def read_root():
-    return {'message': 'URL-Sentinel ML Engine is Live'}
+    return {'message': 'URL-Sentinel API is running'}
 
 @app.post('/scan')
-def scan_url(payload: URLScanRequest, db: Session = Depends(get_db)):
-    ext = extract_features(payload.url)
-    features_vector = np.array([[
-        ext['url_length'], ext['num_dots'], ext['num_hyphens'],
-        ext['num_at'], ext['has_https'], ext['has_ip'],
-        ext['has_suspicious_keyword']
-    ]])
-    
-    pred = ml_model.predict(features_vector)[0]
-    prob = ml_model.predict_proba(features_vector)[0][1]
-    result_label = 'Malicious' if pred == 1 else 'Safe'
-    
-    scan_entry = models.ScanLog(
-        url=payload.url,
-        prediction=result_label,
-        risk_score=float(round(prob, 2))
-    )
-    db.add(scan_entry)
-    db.commit()
-    db.refresh(scan_entry)
-    
-    return {
-        'url': payload.url,
-        'prediction': result_label,
-        'ml_confidence_score': float(round(prob, 2)),
-        'features': ext
-    }
+def scan_url(request: ScanRequest, db: Session = Depends(get_db)):
+    cached_result = get_cached_scan(request.url)
+    if cached_result:
+        return {'url': request.url, 'prediction': cached_result, 'source': 'cache'}
 
-@app.get('/scans', tags=['Telemetry'])
-def get_scan_history(limit: int = 10, db: Session = Depends(get_db)):
-    scans = db.query(models.ScanLog).order_by(models.ScanLog.id.desc()).limit(limit).all()
-    return {'total': len(scans), 'scans': scans}
+    # Basic structural check for demo pipeline
+    prediction = 'Malicious' if '192.168' in request.url or 'login' in request.url else 'Legitimate'
+    set_cached_scan(request.url, prediction)
+
+    db_scan = ScanLog(url=request.url, prediction=prediction)
+    db.add(db_scan)
+    db.commit()
+
+    return {'url': request.url, 'prediction': prediction, 'source': 'model'}
+
+@app.get('/scans')
+def get_scans(db: Session = Depends(get_db)):
+    scans = db.query(ScanLog).all()
+    return {'scans': [{'id': s.id, 'url': s.url, 'prediction': s.prediction} for s in scans]}

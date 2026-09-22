@@ -5,3 +5,4 @@ alembic
 scikit-learn
 pytest
 httpx
+redis
