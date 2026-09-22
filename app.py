@@ -1,142 +1,56 @@
-import json
-import re
-from typing import List, Optional
-from urllib.parse import urlparse
-
-from fastapi import Depends, FastAPI, HTTPException, Header, Request, status
-from pydantic import BaseModel, HttpUrl
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
+from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
-
+from pydantic import BaseModel
+import pickle
+import numpy as np
 import models
-from database import Base, engine, get_db
+from database import engine, get_db
+from feature_extractor import extract_features
 
-# Initialize database tables
-Base.metadata.create_all(bind=engine)
+models.Base.metadata.create_all(bind=engine)
 
-# Initialize Rate Limiter
-limiter = Limiter(key_func=get_remote_address)
+with open('phishing_model.pkl', 'rb') as f:
+    ml_model = pickle.load(f)
 
-# Create FastAPI app instance
-app = FastAPI(
-    title="URL-Sentinel",
-    description="A containerized microservice for real-time URL threat detection.",
-    version="1.0.0",
-)
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app = FastAPI(title='URL-Sentinel API', version='1.0')
 
-# Security Configuration
-API_KEY_CREDENTIAL = "sentinel-secret-key-2026"
-
-def verify_api_key(x_api_key: Optional[str] = Header(None)):
-    if x_api_key != API_KEY_CREDENTIAL:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API Key",
-        )
-    return x_api_key
-
-# Request / Response Schemas
 class URLScanRequest(BaseModel):
-    url: HttpUrl
-
-class URLScanResponse(BaseModel):
     url: str
-    risk_score: float
-    is_malicious: bool
-    detected_heuristics: List[str]
 
-# Threat Feed Loader
-def load_threat_feed() -> set:
-    try:
-        with open("phishing_feed.json", "r") as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                return set(data)
-            return set(data.get("malicious_domains", []))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return set()
+@app.get('/')
+def read_root():
+    return {'message': 'URL-Sentinel ML Engine is Live'}
 
-THREAT_FEED = load_threat_feed()
-
-# Heuristic Engine
-def analyze_url_heuristics(target_url: str) -> tuple[float, List[str], bool]:
-    parsed = urlparse(target_url)
-    hostname = parsed.hostname or ""
-    heuristics = []
-    score = 0.0
-
-    if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", hostname):
-        heuristics.append("IP Address used instead of Domain")
-        score += 0.4
-
-    keywords = ["login", "verify", "secure", "banking", "update", "account"]
-    if any(kw in target_url.lower() for kw in keywords):
-        heuristics.append("High-risk keyword present in URL")
-        score += 0.25
-
-    if len(target_url) > 75:
-        heuristics.append("Excessive URL length")
-        score += 0.15
-
-    if hostname in THREAT_FEED:
-        heuristics.append("Domain listed in active malicious threat feed")
-        score += 0.6
-
-    is_malicious = score >= 0.5
-    return min(score, 1.0), heuristics, is_malicious
-
-# DB Helper
-def log_scan_to_db(db: Session, url: str, risk_score: float, is_malicious: bool):
-    log_entry = models.ScanLog(
-        url=url,
-        risk_score=risk_score,
-        is_malicious=is_malicious
+@app.post('/scan')
+def scan_url(payload: URLScanRequest, db: Session = Depends(get_db)):
+    ext = extract_features(payload.url)
+    features_vector = np.array([[
+        ext['url_length'], ext['num_dots'], ext['num_hyphens'],
+        ext['num_at'], ext['has_https'], ext['has_ip'],
+        ext['has_suspicious_keyword']
+    ]])
+    
+    pred = ml_model.predict(features_vector)[0]
+    prob = ml_model.predict_proba(features_vector)[0][1]
+    result_label = 'Malicious' if pred == 1 else 'Safe'
+    
+    scan_entry = models.ScanLog(
+        url=payload.url,
+        prediction=result_label,
+        risk_score=float(round(prob, 2))
     )
-    db.add(log_entry)
+    db.add(scan_entry)
     db.commit()
-
-# Endpoints
-@app.get("/health", tags=["Health"])
-def health_check():
-    return {"status": "healthy", "service": "URL-Sentinel"}
-
-@app.post("/scan", response_model=URLScanResponse, tags=["Scanner"])
-@limiter.limit("10/minute")
-def scan_url(
-    request: Request,
-    payload: URLScanRequest,
-    db: Session = Depends(get_db)
-):
-    target_str = str(payload.url)
-    score, detected, is_malicious = analyze_url_heuristics(target_str)
-    log_scan_to_db(db, url=target_str, risk_score=score, is_malicious=is_malicious)
-
-    return URLScanResponse(
-        url=target_str,
-        risk_score=score,
-        is_malicious=is_malicious,
-        detected_heuristics=detected
-    )
-
-@app.get("/metrics", tags=["Telemetry"])
-def get_metrics(
-    db: Session = Depends(get_db),
-    api_key: str = Depends(verify_api_key)
-):
-    total_scans = db.query(models.ScanLog).count()
-    flagged_scans = db.query(models.ScanLog).filter(models.ScanLog.is_malicious == True).count()
-
+    db.refresh(scan_entry)
+    
     return {
-        "total_scans_processed": total_scans,
-        "flagged_malicious_urls": flagged_scans,
-        "database_engine": "SQLite / SQLAlchemy ORM"
+        'url': payload.url,
+        'prediction': result_label,
+        'ml_confidence_score': float(round(prob, 2)),
+        'features': ext
     }
 
-@app.get("/scans", tags=["Telemetry"])
+@app.get('/scans', tags=['Telemetry'])
 def get_scan_history(limit: int = 10, db: Session = Depends(get_db)):
     scans = db.query(models.ScanLog).order_by(models.ScanLog.id.desc()).limit(limit).all()
-    return {"total": len(scans), "scans": scans}
+    return {'total': len(scans), 'scans': scans}
