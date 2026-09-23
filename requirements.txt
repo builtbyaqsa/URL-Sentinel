@@ -6,3 +6,4 @@ scikit-learn
 pytest
 httpx
 redis
+slowapi
