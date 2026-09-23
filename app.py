@@ -32,12 +32,12 @@ def health_check(db: Session = Depends(get_db)):
         db_status = "disconnected"
 
     try:
-        redis_status = "connected" if cache_client.ping() else "disconnected"
+        redis_status = "connected" if cache_client and cache_client.ping() else "disconnected"
     except Exception:
         redis_status = "disconnected"
 
     return {
-        "status": "healthy" if db_status == "connected" else "degraded",
+        "status": "healthy" if db_status == "connected" else "unhealthy",
         "database": db_status,
         "cache": redis_status
     }
@@ -45,9 +45,12 @@ def health_check(db: Session = Depends(get_db)):
 @app.post("/scan")
 @limiter.limit("10/minute")
 def scan_url(request: Request, scan_req: ScanRequest, db: Session = Depends(get_db)):
-    cached_result = get_cached_scan(scan_req.url)
-    if cached_result:
-        return {"url": scan_req.url, "prediction": cached_result, "source": "cache"}
+    try:
+        cached_result = get_cached_scan(scan_req.url)
+        if cached_result:
+            return {"url": scan_req.url, "prediction": cached_result, "source": "cache"}
+    except Exception:
+        pass
 
     threat_intel = check_threat_intelligence(scan_req.url)
     if threat_intel["threat_found"]:
@@ -57,7 +60,11 @@ def scan_url(request: Request, scan_req: ScanRequest, db: Session = Depends(get_
         prediction = "Malicious" if "192.168" in scan_req.url else "Legitimate"
         source = "ML Model"
 
-    set_cached_scan(scan_req.url, prediction)
+    try:
+        set_cached_scan(scan_req.url, prediction)
+    except Exception:
+        pass
+
     db_scan = ScanLog(url=scan_req.url, prediction=prediction)
     db.add(db_scan)
     db.commit()
