@@ -1,12 +1,9 @@
 import redis
-import os
-
-# Connect to local Redis instance (Fallback to memory/mock if not available)
-REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
-REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+import json
 
 try:
-    cache_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True, socket_timeout=2)
+    cache_client = redis.Redis(host='localhost', port=6379, db=0, socket_connect_timeout=1)
+    cache_client.ping()
 except Exception:
     cache_client = None
 
@@ -14,14 +11,17 @@ def get_cached_scan(url: str):
     if not cache_client:
         return None
     try:
-        return cache_client.get(f'scan:{url}')
+        data = cache_client.get(url)
+        if data:
+            return json.loads(data)
     except Exception:
-        return None
+        pass
+    return None
 
-def set_cached_scan(url: str, result: str, ttl: int = 3600):
+def set_cached_scan(url: str, result: dict, ttl: int = 3600):
     if not cache_client:
         return
     try:
-        cache_client.setex(f'scan:{url}', ttl, result)
+        cache_client.setex(url, ttl, json.dumps(result))
     except Exception:
         pass
