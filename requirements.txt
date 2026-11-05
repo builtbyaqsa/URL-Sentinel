@@ -7,3 +7,4 @@ pytest
 httpx
 redis
 slowapi
+pandas
